@@ -9,7 +9,7 @@ using namespace std;
 
 typedef double FLOAT;
 
-///  g++ ml_ex4.cpp
+///  g++ ml_ex4.v2.cpp
 
 struct Matrix {
 	int h, w;
@@ -46,6 +46,17 @@ struct Matrix {
 			return;
 		}
 		FLOAT* tmp = p; p = m.p; m.p = tmp;
+	}
+	void move(Matrix& m) {
+		if (p)
+			delete p;
+		h = m.h;
+		w = m.w;
+		p = m.p;
+		name = m.name;
+		m.h = m.w = 0;
+		m.p = 0;
+		m.name = "";
 	}
 	void print() {
 		printf(" ===== %s ===== %p %p %d %d\n", name.c_str(), this, p, h, w);
@@ -279,10 +290,25 @@ map<string, Matrix> mat;
 int nitems = 0;
 FLOAT realmin = 1.1755e-38f;
 
-void read_file() {
-	char* filename = "ex4data1.txt";
+struct ModelSingleHiddenLayer {
+	Matrix Theta1, Theta2, Theta1_grad, Theta2_grad, X, y;
+	int input_layer_size, hidden_layer_size, num_labels;
+	FLOAT lambda;
+	void init(int input_layer_size, int hidden_layer_size, int num_labels, FLOAT lambda) {
+		this->input_layer_size = input_layer_size;
+		this->hidden_layer_size = hidden_layer_size;
+		this->num_labels = num_labels;
+		this->lambda = lambda;
+	}
+	FLOAT costFunction();
+	void updateTheta();
+	void predict(Matrix &data, Matrix &result);
+};
+
+bool read_file() {
+	const char* filename = "ex4data1.txt";
 	FILE* f = fopen(filename, "r");
-	if (!f) { printf("Error in reading file %s\n", filename); return; }
+	if (!f) { printf("Error in reading file %s\n", filename); return false; }
 	char buffer[6000];
 	int current_line = 0;
 	int h = 0;
@@ -310,7 +336,7 @@ void read_file() {
 		if (v.size() >= 3) {
 			if (!strcmp(v[0], "Item")) {
 				if (!strcmp(v[1], "No") && !strcmp(v[2], "More"))
-					return; // file read completed
+					return true; // file read completed
 				if (!strcmp(v[1], "Matrix") && v.size() >= 5) {
 					h = atoi(v[3]);
 					w = atoi(v[4]);
@@ -324,6 +350,7 @@ void read_file() {
 		}
 	}
 	fclose(f);
+	return true;
 }
 
 
@@ -340,8 +367,7 @@ FLOAT costLogisticRegression(FLOAT Y, FLOAT h) {
 	return (FLOAT)((-Y)*log(h) - (1.f - Y)*log(1.f - h));
 }
 
-int use_cuda = 1;
-FLOAT nnCostFunction(Matrix& Theta1, Matrix& Theta2, int input_layer_size, int hidden_layer_size, int num_labels, Matrix& X, Matrix& y, FLOAT lambda, Matrix &Theta1_grad, Matrix &Theta2_grad) {
+FLOAT ModelSingleHiddenLayer::costFunction() {
 	FLOAT J = 0;
 	int m = X.h;
 
@@ -407,7 +433,7 @@ FLOAT nnCostFunction(Matrix& Theta1, Matrix& Theta2, int input_layer_size, int h
 	// % accumulate gradients
 	delta1.tranposeMultiple(sigma2, a1); // 25x401 // delta_1 = (sigma2'*a1);
 	delta2.tranposeMultiple(sigma3, a2); // 10x26  // delta_2 = (sigma3'*a2);
-			
+				
 	Matrix p1, p2;
 	//% calculate regularized gradient
 	p1.copy(Theta1);
@@ -419,6 +445,7 @@ FLOAT nnCostFunction(Matrix& Theta1, Matrix& Theta2, int input_layer_size, int h
 	Theta2_grad.addition(delta2, 1.f / m, p2, lambda / m);  //10 x 26  // Theta2_grad = delta_2. / m + p2;
 
 	return J;
+
 }
 /// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void debugInitializeWeights(Matrix& m, int fan_out, int fan_in) {
@@ -432,7 +459,7 @@ void debugInitializeWeights(Matrix& m, int fan_out, int fan_in) {
 
 /// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FLOAT computeNumericalGradient(Matrix& Theta_1, Matrix& Theta_2, int input_layer_size, int hidden_layer_size, int num_labels, Matrix& X, Matrix& y, FLOAT lambda, Matrix& Theta1_grad, Matrix& Theta2_grad) {
+FLOAT computeNumericalGradient(ModelSingleHiddenLayer &model, Matrix& Theta1, Matrix& Theta2, Matrix &Theta1_grad, Matrix &Theta2_grad) {
 	/*
 	% COMPUTENUMERICALGRADIENT Computes the gradient using "finite differences"
 	% andgives us a numerical estimate of the gradient.
@@ -449,26 +476,17 @@ FLOAT computeNumericalGradient(Matrix& Theta_1, Matrix& Theta_2, int input_layer
 		%
 	*/
 	Matrix perturb1, perturb2;
-	perturb1.init(Theta_1.h, Theta_1.w);
-	perturb2.init(Theta_2.h, Theta_2.w);
+	perturb1.init(Theta1.h, Theta1.w);
+	perturb2.init(Theta2.h, Theta2.w);
 
 	//numgrad = zeros(size(theta));
 	//perturb = zeros(size(theta));
 	FLOAT e = 1e-4f;
-	int n = Theta_1.h * Theta_1.w + Theta_2.h * Theta_2.w;
-	int n1 = Theta_1.h * Theta_1.w;
+	int n = Theta1.h * Theta1.w + Theta2.h * Theta2.w;
+	int n1 = Theta1.h * Theta1.w;
 
-	Matrix t11, t12, t21, t22;
-	t11.init(Theta_1.h, Theta_1.w);
-	t21.init(Theta_1.h, Theta_1.w);
-	t12.init(Theta_2.h, Theta_2.w);
-	t22.init(Theta_2.h, Theta_2.w);
-
-	Matrix s11, s12, s21, s22; // lost1, lost2
-	s11.init(Theta_1.h, Theta_1.w);
-	s21.init(Theta_1.h, Theta_1.w);
-	s12.init(Theta_2.h, Theta_2.w);
-	s22.init(Theta_2.h, Theta_2.w);
+	model.Theta1_grad.init(Theta1.h, Theta1.w);
+	model.Theta2_grad.init(Theta2.h, Theta2.w);
 
 	FLOAT ft[][2] =
 	{ { -0.0092782523, -0.0092782524}
@@ -530,46 +548,30 @@ FLOAT computeNumericalGradient(Matrix& Theta_1, Matrix& Theta_2, int input_layer
 			perturb2.p[nn] = e;       // perturb(p) = e;
 		}
 
-		//perturb1.print();
-		//perturb2.print();
+		model.Theta1.addition(Theta1, 1, perturb1, -1);
+		model.Theta2.addition(Theta2, 1, perturb2, -1);
 
-		Matrix Theta1, Theta2;
-		Theta1.copy(Theta_1);
-		Theta2.copy(Theta_2);
+		FLOAT tt1 = model.Theta1.sum(0) + model.Theta2.sum(0);
+		FLOAT loss1 = model.costFunction();
 
-		t11.addition(Theta1, 1, perturb1, -1);
-		t12.addition(Theta2, 1, perturb2, -1);
-		t21.addition(Theta1, 1, perturb1, 1);
-		t22.addition(Theta2, 1, perturb2, 1);
+		model.Theta1.addition(Theta1, 1, perturb1, 1);
+		model.Theta2.addition(Theta2, 1, perturb2, 1);
+		FLOAT tt2 = model.Theta1.sum(0) + model.Theta2.sum(0);
 
-		t11.name = "t11";
-		t12.name = "t12";
-		t21.name = "t21";
-		t22.name = "t22";
-
-		//t11.print();
-		//t12.print();
-		//t21.print();
-		//t22.print();
-		FLOAT tt1 = t11.sum(0) + t12.sum(0);
-		FLOAT tt2 = t21.sum(0) + t22.sum(0);
-
-		FLOAT loss1 = nnCostFunction(t11, t12, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, s11, s12); // loss1 = J(theta - perturb);
-		FLOAT loss2 = nnCostFunction(t21, t22, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, s21, s22); // loss1 = J(theta - perturb);
-		//printf(" %d === ttt %f %f loss1 = %f  loss2 = %f  %f ==================================================================\n", p, tt1, tt2, loss1, loss2, (loss2 - loss1) / (2 * e));
+		FLOAT loss2 = model.costFunction();
+		printf(" %d === ttt %g %g loss1 = %f  loss2 = %f  %f ==================================================================\n", p, tt1, tt2, loss1, loss2, (loss2 - loss1) / (2 * e));
 
 	// % Compute Numerical Gradient
 		if (p < n1) {                 // numgrad(p) = (loss2 - loss1) / (2 * e);
 			perturb1.p[nn] = 0; 
 			Theta1_grad.p[nn] = (loss2 - loss1) / (2 * e); 
-			//printf(" in loop p=%d n1= %d t1 %d = %f %f %f %g\n", p, n1, p, Theta1_grad.p[nn], ft[p][1], ft[p][0], Theta1_grad.p[nn] - ft[p][1]);
+			printf(" in loop p=%d n1= %d t1 %d = %f %f %f %g\n", p, n1, p, Theta1_grad.p[nn], ft[p][1], ft[p][0], Theta1_grad.p[nn] - ft[p][1]);
 		} else {                      // perturb(p) = 0;
 			perturb2.p[nn] = 0; 
-			Theta2_grad.p[nn] = (loss2 - loss1) / (2 * e); 
+			Theta2_grad.p[nn] = (loss2 - loss1) / (2 * e);
 			//printf(" in loop p=%d n1= %d t1 %d = %f %f %f %g\n", p, n1, p-n1, Theta2_grad.p[nn], ft[p][1], ft[p][0], Theta2_grad.p[nn] - ft[p][1]);
 		}
 	}
-
 
 	return 0;
 }
@@ -588,48 +590,52 @@ void checkNNGradients(FLOAT lambda = 0) {
 		%
 	*/
 
-	int input_layer_size = 3;
-	int hidden_layer_size = 5;
-	int num_labels = 3;
+	ModelSingleHiddenLayer model;
+
+	model.input_layer_size = 3;
+	model.hidden_layer_size = 5;
+	model.num_labels = 3;
+	model.lambda = lambda;
 	int m = 5;
 
-	Matrix Theta1, Theta2, X, y;
 	// % We generate some "random" test data
-	debugInitializeWeights(Theta1, hidden_layer_size, input_layer_size);
-	debugInitializeWeights(Theta2, num_labels, hidden_layer_size);
+	debugInitializeWeights(model.Theta1, model.hidden_layer_size, model.input_layer_size);
+	debugInitializeWeights(model.Theta2, model.num_labels, model.hidden_layer_size);
+	Matrix t1, t2;
+	t1.copy(model.Theta1);
+	t2.copy(model.Theta2);
 
 	// % Reusing debugInitializeWeights to generate X
-	debugInitializeWeights(X, m, input_layer_size - 1);
-	y.init(m, 1);
+	debugInitializeWeights(model.X, m, model.input_layer_size - 1);
+	model.y.init(m, 1);
 	for (int i = 0; i < m; i++)
-		y.p[i] = (FLOAT)(1 + ((i + 1) % num_labels)); // y = 1 + mod(1:m, num_labels)';
+		model.y.p[i] = (FLOAT)(1 + ((i + 1) % model.num_labels)); // y = 1 + mod(1:m, num_labels)';
 
-	Theta1.name = "Theta1";
-	Theta2.name = "Theta2";
-	X.name = "X";
-	y.name = "y";
-	Theta1.print();
-	Theta2.print();
-	X.print();
-	y.print();
+	model.Theta1.name = "debug Theta1";
+	model.Theta2.name = "debug Theta2";
+	model.X.name = "debug X";
+	model.y.name = "debug y";
+	model.Theta1.print();
+	model.Theta2.print();
+	model.X.print();
+	model.y.print();
 
-	// % Unroll parameters
-	// nn_params = [Theta1(:); Theta2(:)];
+	model.Theta1_grad.init(t1.h, t1.w);
+	model.Theta2_grad.init(t2.h, t2.w);
+	// FLOAT cost = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
+	FLOAT cost = model.costFunction();
 
-	// % Short hand for cost function
-	// costFunc = @(p)nnCostFunction(p, input_layer_size, hidden_layer_size, num_labels, X, y, lambda);
-
-	//[cost, grad] = costFunc(nn_params);
 	Matrix Theta1_grad, Theta2_grad, nTheta1_grad, nTheta2_grad;
-	Theta1_grad.init(Theta1.h, Theta1.w);
-	Theta2_grad.init(Theta2.h, Theta2.w);
+	Theta1_grad.init(t1.h, t1.w);
+	Theta2_grad.init(t2.h, t2.w);
+	Theta1_grad.swap(model.Theta1_grad);
+	Theta2_grad.swap(model.Theta2_grad);
 
-	nTheta1_grad.init(Theta1.h, Theta1.w);
-	nTheta2_grad.init(Theta2.h, Theta2.w);
+	nTheta1_grad.init(t1.h, t1.w);
+	nTheta2_grad.init(t2.h, t2.w);
 
-	FLOAT cost = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
-
-	computeNumericalGradient(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, nTheta1_grad, nTheta2_grad);
+	//computeNumericalGradient(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, nTheta1_grad, nTheta2_grad);
+	computeNumericalGradient(model, t1, t2, nTheta1_grad, nTheta2_grad);
 
 	// % Visually examine the two gradient computations.The two columns
 	// % you get should be very similar.
@@ -763,7 +769,7 @@ end
 */
 
 //function[X, fX, i] = fmincg(f, X, options, P1, P2, P3, P4, P5)
-void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, int hidden_layer_size, int num_labels, Matrix& X, Matrix& y, FLOAT lambda) {
+void fmincg(ModelSingleHiddenLayer &model, int maxIter) {
 
 	FLOAT RHO = 0.01;// % a bunch of constants for line searches
 	FLOAT SIG = 0.5;// % RHOand SIG are the constants in the Wolfe - Powell conditions
@@ -784,19 +790,21 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 	S = ['Iteration '];
 	*/
 	Matrix df11,df12,s1, s2, df01, df02, df21, df22;
-	df11.init(Theta1.h, Theta1.w);
-	df12.init(Theta2.h, Theta2.w);
-	df21.init(Theta1.h, Theta1.w);
-	df22.init(Theta2.h, Theta2.w);
+	df11.init(model.Theta1.h, model.Theta1.w);
+	df12.init(model.Theta2.h, model.Theta2.w);
+	df21.init(model.Theta1.h, model.Theta1.w);
+	df22.init(model.Theta2.h, model.Theta2.w);
 
 	int i = 0;// % zero the run length counter
 	int ls_failed = 0;// % no previous line search has failed
 	//fX = [];  // cost for return
 	//[f1 df1] = eval(argstr);// % get function valueand gradient
 
-	FLOAT f1 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df11, df12);
 	FLOAT f2 = 0;
 	FLOAT f0 = 0;
+	FLOAT f1 = model.costFunction();
+	df11.swap(model.Theta1_grad);
+	df12.swap(model.Theta2_grad);
 
 	i = i + (length < 0);// % count epochs ? !
 	s1.copy(df11); ////s = -df1;// % search direction is steepest
@@ -810,11 +818,14 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 	while( i < length) { // //while (i < abs(length)) { // % while not finished
 		i = i + (length > 0);// % count iterations ? !
 
-		t01.copy(Theta1); t02.copy(Theta2); f0 = f1; df01.copy(df11); df02.copy(df12); //X0 = X; f0 = f1; df0 = df1;// % make a copy of current values
-		Theta1.add(s1, z1); Theta2.add(s2, z1);  // X = X + z1 * s;// % begin line search
+		t01.copy(model.Theta1); t02.copy(model.Theta2); f0 = f1; df01.copy(df11); df02.copy(df12); //X0 = X; f0 = f1; df0 = df1;// % make a copy of current values
+		model.Theta1.add(s1, z1); model.Theta2.add(s2, z1);  // X = X + z1 * s;// % begin line search
 		
 		//[f2 df2] = eval(argstr);
-		f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+		//f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+		f2 = model.costFunction();
+		df21.swap(model.Theta1_grad);
+		df22.swap(model.Theta2_grad);
 
 		i = i + (length < 0);// % count epochs ? !
 		FLOAT d2 = df21.dotProduct(s1) + df22.dotProduct(s2); //d2 = df2'*s;
@@ -838,9 +849,12 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 				} // end
 				z2 = max(min(z2, INT * z3), (1 - INT) * z3);// % don't accept too close to limits
 				z1 = z1 + z2;// % update the step
-				Theta1.add(s1, z2); Theta2.add(s2, z2); // X = X + z2 * s;
+				model.Theta1.add(s1, z2); model.Theta2.add(s2, z2); // X = X + z2 * s;
 				//[f2 df2] = eval(argstr);
-				f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+				// f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+				f2 = model.costFunction();
+				df21.swap(model.Theta1_grad);
+				df22.swap(model.Theta2_grad);
 
 				M = M - 1; i = i + (length < 0);// % count epochs ? !
 				d2 = df21.dotProduct(s1) + df22.dotProduct(s2); //// d2 = df2'*s;
@@ -881,9 +895,12 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 			} // end
 			f3 = f2; d3 = d2; z3 = -z2;// % set point 3 equal to point 2
 			z1 = z1 + z2; //X = X + z2 * s;// % update current estimates
-			Theta1.add(s1, z2); Theta2.add(s2, z2);
+			model.Theta1.add(s1, z2); model.Theta2.add(s2, z2);
 			//[f2 df2] = eval(argstr);
-			f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+			//f2 = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, df21, df22);
+			f2 = model.costFunction();
+			df21.swap(model.Theta1_grad);
+			df22.swap(model.Theta2_grad);
 
 			M = M - 1; i = i + (length < 0);// % count epochs ? !
 			d2 = df21.dotProduct(s1) + df22.dotProduct(s2); // d2 = df2'*s;
@@ -911,7 +928,7 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 			ls_failed = 0;// % this line search did not fail
 		}
 		else {
-			Theta1.copy(t01); Theta2.copy(t02); f1 = f0; df11.copy(df01); df12.copy(df02); // X = X0; f1 = f0; df1 = df0; // % restore point from before failed line search
+			model.Theta1.copy(t01); model.Theta2.copy(t02); f1 = f0; df11.copy(df01); df12.copy(df02); // X = X0; f1 = f0; df1 = df0; // % restore point from before failed line search
 			if (ls_failed || i > length) {// % line search failed twice in a row
 				break;// % or we ran out of time, so we give up
 			} //end
@@ -933,7 +950,9 @@ void fmincg(int maxIter, Matrix& Theta1, Matrix& Theta2, int input_layer_size, i
 // % p = PREDICT(Theta1, Theta2, X) outputs the predicted label of X given the
 // % trained weights of a neural network(Theta1, Theta2)
 
-void predict(Matrix& Theta1, Matrix& Theta2, Matrix& X, Matrix& p) {
+void ModelSingleHiddenLayer::predict(Matrix &data, Matrix& p) {
+	X.swap(data);
+
 	// % Useful values
 	int m = X.h; //  m = size(X, 1);
 	int num_labels = Theta2.h; //  size(Theta2, 1);
@@ -974,55 +993,30 @@ void predict(Matrix& Theta1, Matrix& Theta2, Matrix& X, Matrix& p) {
 /// </summary>
 /// <returns></returns>
 int main() {
-	read_file();
-	Matrix& Theta1 = mat["Theta1"];
-	Matrix& Theta2 = mat["Theta2"];
-	Matrix& Theta1_grad = mat["Theta1_grad"];
-	Matrix& Theta2_grad = mat["Theta2_grad"];
-	Theta1_grad.init(Theta1.h, Theta1.w, "Theta1_grad");
-	Theta2_grad.init(Theta2.h, Theta2.w, "Theta1_grad");
-	Matrix& X = mat["X"];
-	Matrix& y = mat["y"];
+	if(!read_file())
+		return 1;
 
 	printf(" number of items: %zu\n", mat.size());
 	for (map<string, Matrix>::iterator it = mat.begin(); it != mat.end(); it++) {
 		printf(" matrix: %s, %d %d\n", it->second.name.c_str(), it->second.h, it->second.w);
 	}
 
-	/*
-	// check data
-	printf(" ===== X ===== %p %p %d %d\n", X, X.p, X.h, X.w);
-	for (int i = 0; i < X.h; i++) {
-		printf(" %g %g %g,", X.p[i*X.w+0], X.p[i*X.w+X.w / 3], X.p[i*X.w+X.w-1]);
-	}
-	printf("\n");
+	ModelSingleHiddenLayer model;
 
-	printf(" ===== y ===== %p %p %d %d\n", y, y.p, y.h, y.w);
-	for (int i = 0; i < y.h; i++) {
-		printf(" %g", y.p[i]);
-	}
-	printf("\n");
+	model.Theta1.move(mat["Theta1"]);
+	model.Theta2 = mat["Theta2"];
+	model.X.move(mat["X"]);
+	model.y.move(mat["y"]);
 
-	printf(" ===== Theta1 ===== %p %p %d %d\n", Theta1, Theta1.p, Theta1.h, Theta1.w);
-	for (int i = 0; i < Theta1.h; i++) {
-		printf(" %g", Theta1.p[i]);
-	}
-	printf("\n");
+	Matrix Theta1_grad, Theta2_grad;
+	Theta1_grad.init(model.Theta1.h, model.Theta1.w, "Theta1_grad");
+	Theta2_grad.init(model.Theta2.h, model.Theta2.w, "Theta1_grad");
 
-	printf(" ===== Theta2 ===== %p %p %d %d\n", Theta2, Theta2.p, Theta2.h, Theta2.w);
-	for (int i = 0; i < Theta2.h; i++) {
-		for (int j = 0; j < Theta2.w; j++) {
-			printf(" %g", Theta2.p[i]);
-		}
-		printf("\n");
-	}
-	printf("\n");
-	*/
 
 	//%% Setup the parameters you will use for this exercise
-	int input_layer_size = 400; //% 20x20 Input Images of Digits
-	int hidden_layer_size = 25; //% 25 hidden units
-	int num_labels = 10;		//% 10 labels, from 1 to 10
+	model.input_layer_size = 400; //% 20x20 Input Images of Digits
+	model.hidden_layer_size = 25; //% 25 hidden units
+	model.num_labels = 10;		//% 10 labels, from 1 to 10
 								//% (note that we have mapped "0" to label 10)
 
 	printf("'\nFeedforward Using Neural Network ...\n");
@@ -1043,8 +1037,8 @@ int main() {
 */
 	//% Weight regularization parameter(we set this to 0 here).
 	
-	FLOAT lambda = 0.f;
-	FLOAT J = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
+	model.lambda = 0.f;
+	FLOAT J = model.costFunction(); //  nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
 
 	printf("Cost at parameters (loaded from ex4weights): %f "
 		"\n(this value should be about 0.287629)\n", J);
@@ -1058,10 +1052,10 @@ int main() {
 	printf("\nChecking Cost Function (w/ Regularization) ... \n");
 
 	//	% Weight regularization parameter(we set this to 1 here).
-		lambda = 1;
+	model.lambda = 1;
 
 	//J = nnCostFunction(nn_params, input_layer_size, hidden_layer_size, num_labels, X, y, lambda);
-	J = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
+	J = model.costFunction(); // nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, Theta1_grad, Theta2_grad);
 
 	printf("Cost at parameters (loaded from ex4weights): %f "
 		"\n(this value should be about 0.383770)\n", J);
@@ -1090,8 +1084,8 @@ int main() {
 	printf("\nInitializing Neural Network Parameters ...\n");
 
 	Matrix initial_Theta1, initial_Theta2;
-	randInitializeWeights(initial_Theta1, input_layer_size, hidden_layer_size); // 25 x 401
-	randInitializeWeights(initial_Theta2, hidden_layer_size, num_labels);       // 10 x 26
+	randInitializeWeights(initial_Theta1, model.input_layer_size, model.hidden_layer_size); // 25 x 401
+	randInitializeWeights(initial_Theta2, model.hidden_layer_size, model.num_labels);       // 10 x 26
 
 /*
 	// % Unroll parameters
@@ -1120,16 +1114,12 @@ int main() {
 
 		% Check gradients by running checkNNGradients
 */
-	lambda = 3.f;
+	FLOAT lambda = 3.f;
 	checkNNGradients(lambda);
 
 	// % Also output the costFunction debugging values
-	Matrix tg1, tg2;
-	tg1.init(Theta1.h, Theta1.w);
-	tg2.init(Theta2.h, Theta2.w);
-	//	debug_J = nnCostFunction(nn_params, input_layer_size, hidden_layer_size, num_labels, X, y, lambda);
 	lambda = 3;
-	FLOAT debug_J = nnCostFunction(Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda, tg1, tg2);
+	FLOAT debug_J = model.costFunction();
 
 	printf("\n\nCost at (fixed) debugging parameters (w/ lambda = 10): %f "
 		"\n(this value should be about 0.576051)\n\n", debug_J);
@@ -1148,7 +1138,7 @@ int main() {
 		//options = optimset('MaxIter', 50);
 
 	//% You should also try different values of lambda
-	lambda = 1;
+	model.lambda = 1;
 
 	/*% Create "short hand" for the cost function to be minimized
 		costFunction = @(p)nnCostFunction(p, ...
@@ -1161,7 +1151,7 @@ int main() {
 		[nn_params, cost] = fmincg(costFunction, initial_nn_params, options); */
 
 	int maxIter = 50;
-	fmincg(maxIter, Theta1, Theta2, input_layer_size, hidden_layer_size, num_labels, X, y, lambda);
+	fmincg(model, maxIter);
 
 	/* % Obtain Theta1and Theta2 back from nn_params
 		Theta1 = reshape(nn_params(1:hidden_layer_size * (input_layer_size + 1)), ...
@@ -1193,12 +1183,12 @@ int main() {
 		% you compute the training set accuracy.
 */
 	Matrix pred;
-	predict(Theta1, Theta2, X, pred);
+	model.predict(model.X, pred);
 
 	int correct = 0;
 	for (int i = 0; i < pred.h; i++)
 	{
-		if (fabs(pred.p[i] - y.p[i]) < 0.01)
+		if (fabs(pred.p[i] - model.y.p[i]) < 0.01)
 			correct++;
 
 		/*
